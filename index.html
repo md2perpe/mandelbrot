@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mandelbrotzoom</title>
+<style>
+  :root {
+    --panel-bg: rgba(18, 20, 28, 0.82);
+    --panel-fg: #e8eaf0;
+    --muted: #9aa1b4;
+    --accent: #7fb2ff;
+    --border: rgba(255, 255, 255, 0.12);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #000; color: var(--panel-fg);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  canvas {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    display: block; touch-action: none; cursor: grab;
+  }
+  canvas.dragging { cursor: grabbing; }
+  .panel {
+    position: fixed; top: 12px; left: 12px;
+    max-width: calc(100vw - 24px); width: 290px;
+    background: var(--panel-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    user-select: none;
+  }
+  .panel.collapsed .body { display: none; }
+  .panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .row label { flex: 0 0 82px; color: var(--muted); }
+  .row input[type=range], .row select { flex: 1; min-width: 0; }
+  .row .val { flex: 0 0 52px; text-align: right; font-variant-numeric: tabular-nums; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  button, select {
+    background: rgba(255,255,255,0.08); color: var(--panel-fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  select option { background: #1a1d27; }
+  button:hover { background: rgba(255,255,255,0.16); }
+  .icon-btn { padding: 2px 8px; }
+  .info {
+    margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--muted); word-break: break-all;
+  }
+  .info b { color: var(--panel-fg); font-weight: 500; }
+  .help { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-bg); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 8px; opacity: 0;
+    transition: opacity .25s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .error {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    padding: 24px; text-align: center;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="panel" id="panel">
+  <header>
+    <h1>Mandelbrotmängden</h1>
+    <button class="icon-btn" id="toggle" title="Visa/dölj panelen">–</button>
+  </header>
+  <div class="body">
+    <div class="row">
+      <label for="iter">Iterationer</label>
+      <input type="range" id="iter" min="50" max="20000" step="10">
+      <span class="val" id="iterVal"></span>
+    </div>
+    <div class="row">
+      <label for="auto">Automatiskt</label>
+      <input type="checkbox" id="auto" checked>
+      <span style="color:var(--muted);font-size:12px">öka med zoomnivån</span>
+    </div>
+    <div class="row">
+      <label for="palette">Färger</label>
+      <select id="palette">
+        <option value="0">Klassisk</option>
+        <option value="1">Eld</option>
+        <option value="2">Is</option>
+        <option value="3">Regnbåge</option>
+        <option value="4">Gråskala</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="density">Färgtäthet</label>
+      <input type="range" id="density" min="-3" max="3" step="0.1" value="0">
+      <span class="val" id="densityVal"></span>
+    </div>
+    <div class="row">
+      <label for="shift">Färgskift</label>
+      <input type="range" id="shift" min="0" max="1" step="0.01" value="0">
+      <span class="val" id="shiftVal"></span>
+    </div>
+    <div class="buttons">
+      <button id="zoomIn">Zooma in</button>
+      <button id="zoomOut">Zooma ut</button>
+      <button id="reset">Återställ</button>
+      <button id="share">Kopiera länk</button>
+      <button id="save">Spara bild</button>
+    </div>
+    <div class="info">
+      Re: <b id="re"></b><br>
+      Im: <b id="im"></b><br>
+      Förstoring: <b id="zoom"></b>
+    </div>
+    <div class="help">
+      Scrolla eller nyp för att zooma, dra för att panorera.
+      Dubbelklicka för att zooma in (Skift + dubbelklick zoomar ut).
+      Tangenter: + / − / piltangenter / R.
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="error" id="error">
+  <p>Din webbläsare saknar stöd för WebGL 2, som behövs för att rita Mandelbrotmängden.</p>
+</div>
+
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+</script>
+
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+precision highp int;
+
+// Referensbanan Z_n (beräknad i dubbel precision i JavaScript) ligger i en
+// flyttalstextur. Varje pixel itererar bara avvikelsen dz från referensbanan,
+// vilket gör att vi kan zooma långt förbi gränsen för 32-bitars flyttal.
+uniform sampler2D uOrbit;
+uniform int uOrbitLen;
+uniform int uMaxIter;
+uniform vec2 uRes;
+uniform float uScale;      // komplex enhet per pixel
+uniform int uPalette;
+uniform float uDensity;
+uniform float uShift;
+
+out vec4 outColor;
+
+const int ORBIT_W = 1024;
+const float BAILOUT = 1.0e4;
+
+vec2 orbit(int i) {
+  return texelFetch(uOrbit, ivec2(i % ORBIT_W, i / ORBIT_W), 0).xy;
+}
+
+vec3 cosPal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+  return a + b * cos(6.28318530718 * (c * t + d));
+}
+
+vec3 palette(float t) {
+  if (uPalette == 0) {
+    // Klassisk: mörkblått -> vitt -> orange -> svart
+    t = fract(t);
+    const vec3 c0 = vec3(0.0, 0.03, 0.39);
+    const vec3 c1 = vec3(0.13, 0.42, 0.8);
+    const vec3 c2 = vec3(0.93, 1.0, 1.0);
+    const vec3 c3 = vec3(1.0, 0.67, 0.0);
+    const vec3 c4 = vec3(0.0, 0.01, 0.0);
+    if (t < 0.16) return mix(c0, c1, t / 0.16);
+    if (t < 0.42) return mix(c1, c2, (t - 0.16) / 0.26);
+    if (t < 0.6425) return mix(c2, c3, (t - 0.42) / 0.2225);
+    if (t < 0.8575) return mix(c3, c4, (t - 0.6425) / 0.215);
+    return mix(c4, c0, (t - 0.8575) / 0.1425);
+  }
+  if (uPalette == 1) return cosPal(t, vec3(0.5, 0.25, 0.1), vec3(0.5, 0.35, 0.15), vec3(1.0), vec3(0.0, 0.08, 0.15));
+  if (uPalette == 2) return cosPal(t, vec3(0.45, 0.6, 0.75), vec3(0.4, 0.35, 0.25), vec3(1.0), vec3(0.55, 0.6, 0.65));
+  if (uPalette == 3) return cosPal(t, vec3(0.5), vec3(0.5), vec3(1.0), vec3(0.0, 0.33, 0.67));
+  return vec3(0.5 + 0.5 * cos(6.28318530718 * t));
+}
+
+void main() {
+  vec2 dc = (gl_FragCoord.xy - 0.5 * uRes) * uScale;
+  vec2 dz = vec2(0.0);
+  vec2 z = vec2(0.0);
+  int m = 0;
+  int n = 0;
+  float r2 = 0.0;
+  bool escaped = false;
+
+  for (n = 0; n < uMaxIter; n++) {
+    vec2 Z = orbit(m);
+    // dz' = 2 Z dz + dz^2 + dc
+    dz = vec2(
+      2.0 * (Z.x * dz.x - Z.y * dz.y) + dz.x * dz.x - dz.y * dz.y,
+      2.0 * (Z.x * dz.y + Z.y * dz.x) + 2.0 * dz.x * dz.y
+    ) + dc;
+    m++;
+    z = orbit(m) + dz;
+    r2 = dot(z, z);
+    if (r2 > BAILOUT) { escaped = true; break; }
+    // Ombasering: byt till början av referensbanan när den fulla banan
+    // kommer närmare noll än avvikelsen, eller när referensbanan tar slut.
+    if (r2 < dot(dz, dz) || m >= uOrbitLen - 1) {
+      dz = z;
+      m = 0;
+    }
+  }
+
+  if (!escaped) {
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+
+  // Kontinuerlig (utjämnad) iterationsräkning
+  float mu = float(n) + 1.0 - log2(log(r2) * 0.5 / log(2.0));
+  mu = max(mu, 0.0);
+  float t = sqrt(mu) * 0.12 * exp2(uDensity) + uShift;
+  outColor = vec4(palette(t), 1.0);
+}
+</script>
+
+<script>
+(() => {
+  'use strict';
+
+  const ORBIT_W = 1024;
+  const BAILOUT = 1e4;
+  const DEFAULT_VIEW = { re: -0.75, im: 0, width: 3.5 };
+  // Under ca 1e-15 per pixel räcker inte dubbel precision för mittpunkten.
+  const MIN_SCALE = 2e-15;
+
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+  if (!gl) {
+    document.getElementById('error').style.display = 'flex';
+    document.getElementById('panel').style.display = 'none';
+    return;
+  }
+
+  // ---------- WebGL-uppsättning ----------
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, document.getElementById('vs').textContent));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, document.getElementById('fs').textContent));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  for (const name of ['uOrbit', 'uOrbitLen', 'uMaxIter', 'uRes', 'uScale', 'uPalette', 'uDensity', 'uShift']) {
+    U[name] = gl.getUniformLocation(prog, name);
+  }
+
+  const orbitTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, orbitTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.uniform1i(U.uOrbit, 0);
+
+  // ---------- Tillstånd ----------
+  const state = {
+    re: DEFAULT_VIEW.re,
+    im: DEFAULT_VIEW.im,
+    scale: 0,          // komplex enhet per CSS-pixel
+    maxIter: 500,
+    autoIter: true,
+    palette: 0,
+    density: 0,
+    shift: 0,
+  };
+  let orbitKey = '';
+  let orbitLen = 0;
+  let dirty = true;
+  let anim = null;
+
+  const $ = id => document.getElementById(id);
+  const ui = {
+    iter: $('iter'), iterVal: $('iterVal'), auto: $('auto'),
+    palette: $('palette'), density: $('density'), densityVal: $('densityVal'),
+    shift: $('shift'), shiftVal: $('shiftVal'),
+    re: $('re'), im: $('im'), zoom: $('zoom'),
+  };
+
+  function cssSize() {
+    return { w: canvas.clientWidth || window.innerWidth, h: canvas.clientHeight || window.innerHeight };
+  }
+  function defaultScale() {
+    const { w, h } = cssSize();
+    return Math.max(DEFAULT_VIEW.width / w, 2.6 / h);
+  }
+  function autoIterations() {
+    const mag = Math.max(1, defaultScale() / state.scale);
+    return Math.round(Math.min(20000, 200 + 120 * Math.pow(Math.log10(mag), 1.6) + 40 * Math.log10(mag)));
+  }
+
+  // ---------- Referensbana ----------
+  function computeOrbit() {
+    const key = state.re + ',' + state.im + ',' + state.maxIter;
+    if (key === orbitKey) return;
+    orbitKey = key;
+    const n = state.maxIter + 1;
+    const rows = Math.ceil((n + 1) / ORBIT_W);
+    const data = new Float32Array(rows * ORBIT_W * 2);
+    const cr = state.re, ci = state.im;
+    let zr = 0, zi = 0, i = 0;
+    data[0] = 0; data[1] = 0;
+    for (i = 1; i <= n; i++) {
+      const t = zr * zr - zi * zi + cr;
+      zi = 2 * zr * zi + ci;
+      zr = t;
+      data[2 * i] = zr;
+      data[2 * i + 1] = zi;
+      if (zr * zr + zi * zi > BAILOUT) { i++; break; }
+    }
+    orbitLen = Math.min(i, n + 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, ORBIT_W, rows, 0, gl.RG, gl.FLOAT, data);
+  }
+
+  // ---------- Ritning ----------
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const { w, h } = cssSize();
+    const W = Math.round(w * dpr), H = Math.round(h * dpr);
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W; canvas.height = H;
+      dirty = true;
+    }
+  }
+
+  function render() {
+    resize();
+    if (state.autoIter) state.maxIter = autoIterations();
+    computeOrbit();
+    const dpr = canvas.width / cssSize().w;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform1i(U.uOrbitLen, orbitLen);
+    gl.uniform1i(U.uMaxIter, state.maxIter);
+    gl.uniform2f(U.uRes, canvas.width, canvas.height);
+    gl.uniform1f(U.uScale, state.scale / dpr);
+    gl.uniform1i(U.uPalette, state.palette);
+    gl.uniform1f(U.uDensity, state.density);
+    gl.uniform1f(U.uShift, state.shift);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    updateUI();
+  }
+
+  function frame(now) {
+    if (anim) {
+      const t = Math.min(1, (now - anim.start) / anim.duration);
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      // Interpolera logaritmiskt i skala och håll fixpunkten stilla
+      const s = anim.s0 * Math.pow(anim.s1 / anim.s0, e);
+      const k = (anim.s0 === anim.s1) ? e : (anim.s0 - s) / (anim.s0 - anim.s1);
+      state.scale = s;
+      state.re = anim.re0 + (anim.re1 - anim.re0) * k;
+      state.im = anim.im0 + (anim.im1 - anim.im0) * k;
+      dirty = true;
+      if (t >= 1) { anim = null; saveHash(); }
+    }
+    if (dirty) { dirty = false; render(); }
+    requestAnimationFrame(frame);
+  }
+
+  function invalidate() { dirty = true; }
+
+  function updateUI() {
+    const mag = defaultScale() / state.scale;
+    const digits = Math.max(6, Math.min(17, Math.ceil(Math.log10(mag)) + 4));
+    ui.re.textContent = state.re.toFixed(digits);
+    ui.im.textContent = state.im.toFixed(digits);
+    ui.zoom.textContent = mag < 1e5 ? mag.toFixed(mag < 10 ? 2 : 0) + '×' : mag.toExponential(2) + '×';
+    ui.iter.value = state.maxIter;
+    ui.iterVal.textContent = state.maxIter;
+    ui.iter.disabled = state.autoIter;
+  }
+
+  // ---------- Koordinater och zoom ----------
+  function clientToComplex(x, y) {
+    const rect = canvas.getBoundingClientRect();
+    const px = x - rect.left - rect.width / 2;
+    const py = y - rect.top - rect.height / 2;
+    return { re: state.re + px * state.scale, im: state.im - py * state.scale };
+  }
+
+  function clampScale(s) {
+    if (s < MIN_SCALE) { toast('Maximalt zoomdjup nått (gränsen för dubbel precision)'); return MIN_SCALE; }
+    return Math.min(s, defaultScale() * 4);
+  }
+
+  // Zooma med faktor f runt punkten (x, y) i klientkoordinater
+  function zoomAt(x, y, f) {
+    anim = null;
+    const p = clientToComplex(x, y);
+    const s = clampScale(state.scale * f);
+    const k = s / state.scale;
+    state.re = p.re + (state.re - p.re) * k;
+    state.im = p.im + (state.im - p.im) * k;
+    state.scale = s;
+    invalidate();
+    saveHashSoon();
+  }
+
+  function animateZoom(x, y, f) {
+    const p = clientToComplex(x, y);
+    const s1 = clampScale(state.scale * f);
+    const k = s1 / state.scale;
+    anim = {
+      start: performance.now(), duration: 350,
+      s0: state.scale, s1,
+      re0: state.re, im0: state.im,
+      re1: p.re + (state.re - p.re) * k,
+      im1: p.im + (state.im - p.im) * k,
+    };
+  }
+
+  function centerClient() {
+    const r = canvas.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+
+  // ---------- Inmatning ----------
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16;
+    else if (e.deltaMode === 2) dy *= 400;
+    zoomAt(e.clientX, e.clientY, Math.exp(dy * 0.0015));
+  }, { passive: false });
+
+  const pointers = new Map();
+  let pinch = null;
+
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    anim = null;
+    canvas.classList.add('dragging');
+    if (pointers.size === 2) pinch = pinchInfo();
+  });
+
+  function pinchInfo() {
+    const [a, b] = [...pointers.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  canvas.addEventListener('pointermove', e => {
+    const prev = pointers.get(e.pointerId);
+    if (!prev) return;
+    const cur = { x: e.clientX, y: e.clientY };
+    if (pointers.size === 1) {
+      state.re -= (cur.x - prev.x) * state.scale;
+      state.im += (cur.y - prev.y) * state.scale;
+      pointers.set(e.pointerId, cur);
+      invalidate();
+    } else if (pointers.size === 2) {
+      pointers.set(e.pointerId, cur);
+      const p = pinchInfo();
+      // panorera med mittpunkten och zooma med avståndet
+      state.re -= (p.x - pinch.x) * state.scale;
+      state.im += (p.y - pinch.y) * state.scale;
+      if (pinch.d > 0 && p.d > 0) zoomAt(p.x, p.y, pinch.d / p.d);
+      pinch = p;
+      invalidate();
+    }
+  });
+
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinch = null;
+    if (pointers.size === 2) pinch = pinchInfo();
+    if (pointers.size === 0) { canvas.classList.remove('dragging'); saveHash(); }
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+
+  canvas.addEventListener('dblclick', e => {
+    e.preventDefault();
+    animateZoom(e.clientX, e.clientY, e.shiftKey ? 4 : 0.25);
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const c = centerClient();
+    const step = 80;
+    switch (e.key) {
+      case '+': case '=': animateZoom(c.x, c.y, 0.5); break;
+      case '-': case '_': animateZoom(c.x, c.y, 2); break;
+      case 'ArrowLeft': state.re -= step * state.scale; break;
+      case 'ArrowRight': state.re += step * state.scale; break;
+      case 'ArrowUp': state.im += step * state.scale; break;
+      case 'ArrowDown': state.im -= step * state.scale; break;
+      case 'r': case 'R': reset(); break;
+      default: return;
+    }
+    e.preventDefault();
+    invalidate();
+    saveHashSoon();
+  });
+
+  window.addEventListener('resize', invalidate);
+
+  // ---------- Panelen ----------
+  function setCollapsed(c) {
+    $('panel').classList.toggle('collapsed', c);
+    $('toggle').textContent = c ? '+' : '–';
+  }
+  $('toggle').addEventListener('click', () => setCollapsed(!$('panel').classList.contains('collapsed')));
+  if (window.innerWidth < 600 || window.innerHeight < 500) setCollapsed(true);
+  $('zoomIn').addEventListener('click', () => { const c = centerClient(); animateZoom(c.x, c.y, 0.25); });
+  $('zoomOut').addEventListener('click', () => { const c = centerClient(); animateZoom(c.x, c.y, 4); });
+  $('reset').addEventListener('click', reset);
+  $('share').addEventListener('click', async () => {
+    saveHash();
+    try {
+      await navigator.clipboard.writeText(location.href);
+      toast('Länken är kopierad');
+    } catch {
+      toast('Kunde inte kopiera – använd adressfältet');
+    }
+  });
+  $('save').addEventListener('click', () => {
+    render();
+    canvas.toBlob(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'mandelbrot.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+  });
+
+  ui.iter.addEventListener('input', () => { state.maxIter = +ui.iter.value; invalidate(); saveHashSoon(); });
+  ui.auto.addEventListener('change', () => { state.autoIter = ui.auto.checked; invalidate(); saveHashSoon(); });
+  ui.palette.addEventListener('change', () => { state.palette = +ui.palette.value; invalidate(); saveHashSoon(); });
+  ui.density.addEventListener('input', () => { state.density = +ui.density.value; syncSliders(); invalidate(); saveHashSoon(); });
+  ui.shift.addEventListener('input', () => { state.shift = +ui.shift.value; syncSliders(); invalidate(); saveHashSoon(); });
+
+  function syncSliders() {
+    ui.auto.checked = state.autoIter;
+    ui.palette.value = state.palette;
+    ui.density.value = state.density;
+    ui.densityVal.textContent = state.density.toFixed(1);
+    ui.shift.value = state.shift;
+    ui.shiftVal.textContent = state.shift.toFixed(2);
+  }
+
+  function reset() {
+    anim = null;
+    state.re = DEFAULT_VIEW.re;
+    state.im = DEFAULT_VIEW.im;
+    state.scale = defaultScale();
+    invalidate();
+    saveHash();
+  }
+
+  let toastTimer = 0;
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  // ---------- Position i URL:en ----------
+  function saveHash() {
+    const p = new URLSearchParams();
+    p.set('re', state.re.toPrecision(17));
+    p.set('im', state.im.toPrecision(17));
+    p.set('zoom', (defaultScale() / state.scale).toPrecision(8));
+    if (!state.autoIter) p.set('iter', state.maxIter);
+    if (state.palette) p.set('pal', state.palette);
+    if (state.density) p.set('dens', state.density);
+    if (state.shift) p.set('shift', state.shift);
+    lastHash = p.toString();
+    history.replaceState(null, '', '#' + lastHash);
+  }
+  let lastHash = '';
+  let hashTimer = 0;
+  function saveHashSoon() {
+    clearTimeout(hashTimer);
+    hashTimer = setTimeout(saveHash, 300);
+  }
+
+  function loadHash() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    const num = (k, d) => { const v = parseFloat(p.get(k)); return Number.isFinite(v) ? v : d; };
+    state.re = num('re', DEFAULT_VIEW.re);
+    state.im = num('im', DEFAULT_VIEW.im);
+    const zoom = num('zoom', 1);
+    state.scale = Math.max(MIN_SCALE, defaultScale() / (zoom > 0 ? zoom : 1));
+    if (p.has('iter')) {
+      state.autoIter = false;
+      state.maxIter = Math.max(10, Math.min(20000, Math.round(num('iter', 500))));
+    }
+    state.palette = Math.max(0, Math.min(4, Math.round(num('pal', 0))));
+    state.density = Math.max(-3, Math.min(3, num('dens', 0)));
+    state.shift = Math.max(0, Math.min(1, num('shift', 0)));
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (location.hash.slice(1) === lastHash) return;
+    anim = null;
+    loadHash();
+    syncSliders();
+    invalidate();
+  });
+
+  loadHash();
+  syncSliders();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
